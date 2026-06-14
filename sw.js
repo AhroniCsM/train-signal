@@ -1,5 +1,5 @@
 /* Train Signal Mapper service worker */
-var SHELL = 'ts-shell-v2';
+var SHELL = 'ts-shell-v3';
 var TILES = 'ts-tiles-v1';
 var SHELL_FILES = [
   './',
@@ -51,7 +51,28 @@ self.addEventListener('fetch', function(e){
   // Never cache the connectivity-check pings — they must hit the network live
   if(/generate_204|cdn-cgi\/trace|google\.com\/favicon/.test(req.url)) return;
 
-  // App shell: cache-first, fall back to network
+  // HTML / navigation: NETWORK-FIRST so new deploys always reach the device when online,
+  // falling back to cache only when offline (so dead-zone reloads still work).
+  var isHTML = req.mode==='navigate'
+    || (req.headers.get('accept')||'').indexOf('text/html')>=0
+    || /\.html$/.test(url.pathname)
+    || url.pathname.charAt(url.pathname.length-1)==='/';
+  if(isHTML){
+    e.respondWith(
+      fetch(req).then(function(res){
+        if(res && res.status===200){
+          var copy=res.clone();
+          caches.open(SHELL).then(function(c){ c.put(req, copy); });
+        }
+        return res;
+      }).catch(function(){
+        return caches.match(req).then(function(h){ return h || caches.match('./index.html'); });
+      })
+    );
+    return;
+  }
+
+  // Other assets (Leaflet js/css, manifest): cache-first, fall back to network
   e.respondWith(
     caches.match(req).then(function(hit){
       return hit || fetch(req).then(function(res){
