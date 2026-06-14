@@ -1,5 +1,5 @@
 /* Train Signal Mapper service worker */
-var SHELL = 'ts-shell-v1';
+var SHELL = 'ts-shell-v2';
 var TILES = 'ts-tiles-v1';
 var SHELL_FILES = [
   './',

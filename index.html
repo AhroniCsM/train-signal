@@ -167,6 +167,7 @@
   // Connectivity test: race several no-cors pings against a timeout.
   // Resolves true if any responds before timeout, else false.
   function checkInternet(){
+    try{
     if(navigator.onLine === false) return Promise.resolve(false);
     var ctrl = new AbortController();
     var to = setTimeout(function(){ ctrl.abort(); }, PING_TIMEOUT_MS);
@@ -178,6 +179,7 @@
     return Promise.any(attempts)
       .then(function(){ clearTimeout(to); ctrl.abort(); return true; })
       .catch(function(){ clearTimeout(to); return false; });
+    }catch(e){ return Promise.resolve(false); }
   }
 
   function record(lat, lon, online, extra){
@@ -297,11 +299,20 @@
     });
   }
 
-  function start(){
+  function start(resume){
     if(!('geolocation' in navigator)){ alert('No geolocation on this device.'); return; }
     tracking = true;
-    store.rides++; rideCount = 0; saveStore();
-    setLive(null, 'Getting GPS fix…');
+    if(resume && store.active){
+      // continue the SAME ride after a reload/crash — don't inflate the ride count
+      rideCount = store.samples.filter(function(s){return s.ride===store.active.ride;}).length;
+    } else {
+      store.rides++;
+      store.active = {ride: store.rides};
+      rideCount = 0;
+    }
+    saveStore();
+    requestWake();
+    setLive(null, resume ? 'Resumed ride · getting GPS fix…' : 'Getting GPS fix…');
     watchId = navigator.geolocation.watchPosition(function(pos){
       lastPos = pos;
       var ll=[pos.coords.latitude,pos.coords.longitude];
@@ -322,6 +333,8 @@
     if(watchId!=null) navigator.geolocation.clearWatch(watchId);
     if(pingTimer) clearInterval(pingTimer);
     watchId=null; pingTimer=null;
+    store.active=null; saveStore();
+    releaseWake();
     setLive(null, 'Stopped. '+rideCount+' samples this ride saved.');
     document.getElementById('btnStart').textContent='▶ Start tracking';
     document.getElementById('btnStart').classList.remove('stop');
@@ -332,7 +345,7 @@
   document.getElementById('btnFit').onclick=fitToData;
   document.getElementById('btnReset').onclick=function(){
     if(confirm('Erase ALL rides and connectivity data?')){
-      store={cells:{},rides:0,samples:[]}; rideCount=0; saveStore();
+      store={cells:{},rides:0,samples:[],active:null}; rideCount=0; saveStore();
       renderCells(); renderRoute(); updateStats(); setLive(null,'Data cleared.');
     }
   };
@@ -346,13 +359,26 @@
 
   // keep screen awake while tracking (best-effort)
   var wakeLock=null;
-  document.addEventListener('visibilitychange', async function(){
-    if(tracking && wakeLock===null && document.visibilityState==='visible'){
-      try{ wakeLock=await navigator.wakeLock.request('screen'); }catch(e){}
-    }
+  async function requestWake(){
+    try{ if('wakeLock' in navigator){ wakeLock=await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', function(){ wakeLock=null; }); } }catch(e){}
+  }
+  function releaseWake(){ try{ if(wakeLock){ wakeLock.release(); wakeLock=null; } }catch(e){} }
+  document.addEventListener('visibilitychange', function(){
+    // iOS releases the wake lock when the tab is hidden — re-acquire on return so the
+    // screen stays awake and the tab is less likely to be killed mid-ride
+    if(tracking && document.visibilityState==='visible'){ requestWake(); if(lastPos) tick(); }
   });
 
   updateStats();
+  // Auto-resume an interrupted ride after a reload/crash (e.g. tab killed in a dead zone).
+  // Data is already saved; this just continues the SAME ride and restarts tracking.
+  if(store.active){
+    setLive(null, 'Interrupted ride detected — resuming…');
+    document.getElementById('btnStart').textContent='■ Stop tracking';
+    document.getElementById('btnStart').classList.add('stop');
+    start(true);
+  }
   // register service worker (caches app + map tiles for offline rides; needs http/https)
   if('serviceWorker' in navigator && location.protocol!=='file:'){
     navigator.serviceWorker.register('sw.js').catch(function(){});
