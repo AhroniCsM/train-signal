@@ -128,11 +128,28 @@
   var cellLayer = L.layerGroup().addTo(map);
   var meMarker = null;
 
-  // endpoint stations for orientation
-  L.circleMarker([31.8676, 34.7360], {radius:6,color:'#fff',fillColor:'#4f8cff',fillOpacity:1})
-    .addTo(map).bindTooltip("Yavne West");
-  L.circleMarker([32.0837, 34.7980], {radius:6,color:'#fff',fillColor:'#4f8cff',fillOpacity:1})
-    .addTo(map).bindTooltip("TLV Savidor Center");
+  // Stations on the Yavne West ↔ Tel Aviv Savidor line, in rail order (south → north)
+  var STATIONS = [
+    {name:'Yavne West',              lat:31.8676,  lon:34.7360},
+    {name:'Rishon LeZion–Moshe Dayan',lat:31.9879, lon:34.7574},
+    {name:'Bat Yam–Komemiyut',       lat:32.00083, lon:34.75944},
+    {name:'Bat Yam–Yoseftal',        lat:32.01500, lon:34.76194},
+    {name:'Holon–Wolfson',           lat:32.03528, lon:34.75972},
+    {name:'Holon Junction',          lat:32.03722, lon:34.77667},
+    {name:'Tel Aviv–HaHagana',       lat:32.05417, lon:34.78472},
+    {name:'Tel Aviv–HaShalom',       lat:32.07333, lon:34.793194},
+    {name:'Tel Aviv Savidor Center', lat:32.0837,  lon:34.7980}
+  ];
+  // route line connecting the stops, for orientation
+  L.polyline(STATIONS.map(function(s){return [s.lat,s.lon];}),
+    {color:'#4f8cff', weight:3, opacity:0.5, dashArray:'6 6'}).addTo(map);
+  STATIONS.forEach(function(s,i){
+    var end = (i===0 || i===STATIONS.length-1);
+    L.circleMarker([s.lat,s.lon], {
+      radius: end?7:5, weight:2, color:'#fff',
+      fillColor: end?'#4f8cff':'#0b1020', fillOpacity:1
+    }).addTo(map).bindTooltip((i+1)+'. '+s.name, {direction:'top'});
+  });
 
   renderCells();
   renderRoute();
@@ -245,6 +262,12 @@
       ctx.fillStyle = b.n? ratioColor(b.on/b.n) : '#222c44';
       ctx.fillRect(i*bw, 4, Math.ceil(bw)+0.5, h-8);
     }
+    // station tick marks along the strip (projected onto the route)
+    ctx.fillStyle='rgba(255,255,255,0.85)';
+    STATIONS.forEach(function(s){
+      var x=projectT(s.lat,s.lon)*w;
+      ctx.fillRect(Math.min(w-1.5,Math.max(0,x-0.75)), 0, 1.5, h);
+    });
   }
   (function(){
     var cv=document.getElementById('routeCanvas');
