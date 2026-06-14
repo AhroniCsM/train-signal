@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#0b1020" />
+<link rel="manifest" href="manifest.json" />
+<title>Train Signal Mapper · Yavne W → TLV Savidor</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root{
+    --bg:#0b1020; --panel:#141b2e; --panel2:#1b2540; --text:#e7ecf5;
+    --muted:#8c97b2; --accent:#4f8cff; --good:#28c76f; --bad:#ff4d4f; --mid:#ffb020;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  #app{display:flex;flex-direction:column;height:100%}
+  header{padding:10px 14px;background:var(--panel);border-bottom:1px solid #0006}
+  header h1{margin:0;font-size:15px;font-weight:700;letter-spacing:.2px}
+  header .sub{font-size:11px;color:var(--muted);margin-top:2px}
+  #map{flex:1 1 auto;min-height:0}
+  .controls{padding:10px 12px;background:var(--panel);display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid #0006}
+  button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:12px 16px;color:#fff;background:var(--panel2);cursor:pointer}
+  button.primary{background:var(--accent);flex:1 1 140px;font-size:16px;padding:14px}
+  button.stop{background:var(--bad)}
+  button.ghost{background:#0000;border:1px solid #334063;color:var(--text)}
+  button:active{transform:scale(.98)}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:8px 12px;background:var(--panel)}
+  .stat{background:var(--panel2);border-radius:10px;padding:8px 10px;text-align:center}
+  .stat .v{font-size:18px;font-weight:700}
+  .stat .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+  .status{padding:8px 12px;font-size:13px;display:flex;align-items:center;gap:8px;background:var(--panel)}
+  .dot{width:12px;height:12px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+  .dot.on{background:var(--good);box-shadow:0 0 10px var(--good)}
+  .dot.off{background:var(--bad);box-shadow:0 0 10px var(--bad)}
+  .legend{font-size:11px;color:var(--muted);padding:0 12px 8px;background:var(--panel)}
+  .legend b{color:var(--text)}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}
+  .row{display:flex;gap:8px;flex-wrap:wrap;width:100%}
+  .leaflet-popup-content{font-size:13px}
+  a.dl{color:var(--accent)}
+  .route{padding:6px 12px 10px;background:var(--panel)}
+  .route-head{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:4px}
+  .route-hover{color:var(--text);font-weight:700}
+  #routeCanvas{width:100%;height:34px;border-radius:8px;display:block;background:#0d1424}
+  .route-ends{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>🚆 Train Signal Mapper</h1>
+    <div class="sub">Yavne West → Tel Aviv Savidor Center · maps connectivity by location, averaged over all your rides</div>
+  </header>
+
+  <div id="map"></div>
+
+  <div class="status">
+    <span id="liveDot" class="dot"></span>
+    <span id="liveText">Idle — press Start when you board</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="v" id="sRide">0</div><div class="l">This ride</div></div>
+    <div class="stat"><div class="v" id="sRides">0</div><div class="l">Rides logged</div></div>
+    <div class="stat"><div class="v" id="sCells">0</div><div class="l">Map cells</div></div>
+    <div class="stat"><div class="v" id="sOnline">–</div><div class="l">% online</div></div>
+  </div>
+
+  <div class="legend">
+    Cell color = average % of pings with internet across all rides &nbsp;
+    <span class="pill" style="background:var(--good)">good</span>
+    <span class="pill" style="background:var(--mid);color:#222">spotty</span>
+    <span class="pill" style="background:var(--bad)">dead</span>
+  </div>
+
+  <div class="route">
+    <div class="route-head">
+      <span>Signal along the line (averaged over all rides)</span>
+      <span id="routeHover" class="route-hover"></span>
+    </div>
+    <canvas id="routeCanvas" height="34"></canvas>
+    <div class="route-ends"><span>Yavne West</span><span>TLV Savidor</span></div>
+  </div>
+
+  <div class="controls">
+    <button id="btnStart" class="primary">▶ Start tracking</button>
+    <div class="row">
+      <button id="btnFit" class="ghost">Fit map</button>
+      <button id="btnExport" class="ghost">Export JSON</button>
+      <button id="btnReset" class="ghost">Reset data</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  // ---------- config ----------
+  var PING_INTERVAL_MS = 4000;     // how often to test connectivity
+  var PING_TIMEOUT_MS  = 3000;     // a ping slower than this counts as "no internet"
+  var GRID_DEG = 0.0004;           // ~45m cells: positions snap to a grid so rides average together
+  var STORE_KEY = "trainSignal.v1";
+  // Endpoints to race for the connectivity check (no-cors → resolves on reachable, rejects/aborts on dead)
+  var PING_URLS = [
+    "https://www.gstatic.com/generate_204",
+    "https://cloudflare.com/cdn-cgi/trace",
+    "https://www.google.com/favicon.ico"
+  ];
+
+  // ---------- state ----------
+  var store = loadStore();         // { cells:{key:{n,on}}, rides:int, samples:[...] }
+  var tracking = false;
+  var watchId = null;
+  var pingTimer = null;
+  var lastPos = null;
+  var rideCount = 0;               // samples in current ride
+
+  // ---------- map ----------
+  var map = L.map('map', {zoomControl:true}).setView([32.0, 34.8], 11);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '© OpenStreetMap'
+  }).addTo(map);
+
+  var cellLayer = L.layerGroup().addTo(map);
+  var meMarker = null;
+
+  // endpoint stations for orientation
+  L.circleMarker([31.8676, 34.7360], {radius:6,color:'#fff',fillColor:'#4f8cff',fillOpacity:1})
+    .addTo(map).bindTooltip("Yavne West");
+  L.circleMarker([32.0837, 34.7980], {radius:6,color:'#fff',fillColor:'#4f8cff',fillOpacity:1})
+    .addTo(map).bindTooltip("TLV Savidor Center");
+
+  renderCells();
+  renderRoute();
+  fitToData();
+  window.addEventListener('resize', renderRoute);
+
+  // ---------- helpers ----------
+  function loadStore(){
+    try{
+      var s = JSON.parse(localStorage.getItem(STORE_KEY));
+      if(s && s.cells) { s.samples = s.samples||[]; s.rides=s.rides||0; return s; }
+    }catch(e){}
+    return {cells:{}, rides:0, samples:[]};
+  }
+  function saveStore(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(store)); }catch(e){} }
+
+  function cellKey(lat,lon){
+    var la = Math.round(lat/GRID_DEG)*GRID_DEG;
+    var lo = Math.round(lon/GRID_DEG)*GRID_DEG;
+    return la.toFixed(4)+","+lo.toFixed(4);
+  }
+  function keyToLatLon(k){ var p=k.split(","); return [parseFloat(p[0]), parseFloat(p[1])]; }
+
+  function ratioColor(r){
+    // 0 = dead (red), .5 = spotty (amber), 1 = good (green)
+    if(r>=0.8) return '#28c76f';
+    if(r>=0.5) return '#9acd32';
+    if(r>=0.25) return '#ffb020';
+    return '#ff4d4f';
+  }
+
+  // Connectivity test: race several no-cors pings against a timeout.
+  // Resolves true if any responds before timeout, else false.
+  function checkInternet(){
+    if(navigator.onLine === false) return Promise.resolve(false);
+    var ctrl = new AbortController();
+    var to = setTimeout(function(){ ctrl.abort(); }, PING_TIMEOUT_MS);
+    var attempts = PING_URLS.map(function(u){
+      return fetch(u + (u.indexOf('?')<0?'?':'&') + 'cb=' + Date.now(),
+                   {mode:'no-cors', cache:'no-store', signal:ctrl.signal})
+             .then(function(){ return true; });
+    });
+    return Promise.any(attempts)
+      .then(function(){ clearTimeout(to); ctrl.abort(); return true; })
+      .catch(function(){ clearTimeout(to); return false; });
+  }
+
+  function record(lat, lon, online, extra){
+    var key = cellKey(lat,lon);
+    var c = store.cells[key] || (store.cells[key]={n:0,on:0});
+    c.n++; if(online) c.on++;
+    store.samples.push({t:Date.now(), lat:+lat.toFixed(6), lon:+lon.toFixed(6),
+                        online:online?1:0, ride:store.rides,
+                        spd:extra&&extra.speed!=null?Math.round(extra.speed*3.6):null});
+    if(store.samples.length>20000) store.samples.splice(0, store.samples.length-20000);
+    rideCount++;
+    saveStore();
+    renderCells();
+    renderRoute();
+    updateStats();
+  }
+
+  function renderCells(){
+    cellLayer.clearLayers();
+    var keys = Object.keys(store.cells);
+    keys.forEach(function(k){
+      var c = store.cells[k]; var ll = keyToLatLon(k);
+      var r = c.n? c.on/c.n : 0;
+      L.circle(ll, {radius:30, color:ratioColor(r), weight:1,
+                    fillColor:ratioColor(r), fillOpacity:0.65})
+        .bindPopup('<b>'+Math.round(r*100)+'% online</b><br>'+
+                   c.on+' / '+c.n+' pings<br><span style="color:#888">'+k+'</span>')
+        .addTo(cellLayer);
+    });
+  }
+
+  // ---------- route strip: project cells onto Yavne→TLV line ----------
+  var A = {lat:31.8676, lon:34.7360};   // Yavne West
+  var B = {lat:32.0837, lon:34.7980};   // TLV Savidor Center
+  var SEGS = 60;
+  function projectT(lat,lon){
+    // equirectangular projection (good enough over ~25km), clamp to [0,1]
+    var k = Math.cos((A.lat+B.lat)/2 * Math.PI/180);
+    var ax=A.lon*k, ay=A.lat, bx=B.lon*k, by=B.lat, px=lon*k, py=lat;
+    var dx=bx-ax, dy=by-ay, L2=dx*dx+dy*dy;
+    if(!L2) return 0;
+    var t=((px-ax)*dx+(py-ay)*dy)/L2;
+    return Math.max(0,Math.min(1,t));
+  }
+  function renderRoute(){
+    var cv=document.getElementById('routeCanvas');
+    var dpr=window.devicePixelRatio||1;
+    var w=cv.clientWidth||cv.offsetWidth||300, h=34;
+    cv.width=w*dpr; cv.height=h*dpr;
+    var ctx=cv.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,w,h);
+    // aggregate cells into route segments
+    var buckets=new Array(SEGS).fill(0).map(function(){return {n:0,on:0};});
+    Object.keys(store.cells).forEach(function(k){
+      var c=store.cells[k]; var ll=keyToLatLon(k);
+      var t=projectT(ll[0],ll[1]); var i=Math.min(SEGS-1,Math.floor(t*SEGS));
+      buckets[i].n+=c.n; buckets[i].on+=c.on;
+    });
+    window._routeBuckets=buckets;
+    var bw=w/SEGS;
+    for(var i=0;i<SEGS;i++){
+      var b=buckets[i];
+      ctx.fillStyle = b.n? ratioColor(b.on/b.n) : '#222c44';
+      ctx.fillRect(i*bw, 4, Math.ceil(bw)+0.5, h-8);
+    }
+  }
+  (function(){
+    var cv=document.getElementById('routeCanvas');
+    function show(ev){
+      var rect=cv.getBoundingClientRect();
+      var x=(ev.touches?ev.touches[0].clientX:ev.clientX)-rect.left;
+      var i=Math.max(0,Math.min(SEGS-1,Math.floor(x/rect.width*SEGS)));
+      var b=(window._routeBuckets||[])[i];
+      var pct=Math.round((i+0.5)/SEGS*100);
+      var el=document.getElementById('routeHover');
+      el.textContent = b&&b.n ? pct+'% along · '+Math.round(b.on/b.n*100)+'% online ('+b.n+')' : pct+'% along · no data';
+    }
+    cv.addEventListener('mousemove',show);
+    cv.addEventListener('touchstart',show);
+    cv.addEventListener('touchmove',function(e){show(e);e.preventDefault();},{passive:false});
+  })();
+
+  function fitToData(){
+    var keys = Object.keys(store.cells);
+    if(keys.length){
+      var b = L.latLngBounds(keys.map(keyToLatLon));
+      map.fitBounds(b.pad(0.3));
+    } else {
+      map.fitBounds(L.latLngBounds([[31.8676,34.7360],[32.0837,34.7980]]).pad(0.3));
+    }
+  }
+
+  function updateStats(){
+    document.getElementById('sRide').textContent = rideCount;
+    document.getElementById('sRides').textContent = store.rides;
+    var keys = Object.keys(store.cells);
+    document.getElementById('sCells').textContent = keys.length;
+    var n=0,on=0; keys.forEach(function(k){n+=store.cells[k].n;on+=store.cells[k].on;});
+    document.getElementById('sOnline').textContent = n? Math.round(on/n*100)+'%' : '–';
+  }
+
+  function setLive(online, text){
+    var dot = document.getElementById('liveDot');
+    dot.className = 'dot ' + (online===true?'on':online===false?'off':'');
+    document.getElementById('liveText').textContent = text;
+  }
+
+  // ---------- ping loop (driven by GPS positions) ----------
+  function tick(){
+    if(!tracking || !lastPos) return;
+    var lat = lastPos.coords.latitude, lon = lastPos.coords.longitude;
+    checkInternet().then(function(online){
+      record(lat, lon, online, lastPos.coords);
+      setLive(online, (online?'📶 Online':'🚫 No internet') +
+        ' · ' + lat.toFixed(4)+', '+lon.toFixed(4) +
+        (lastPos.coords.speed!=null? ' · '+Math.round(lastPos.coords.speed*3.6)+' km/h':''));
+    });
+  }
+
+  function start(){
+    if(!('geolocation' in navigator)){ alert('No geolocation on this device.'); return; }
+    tracking = true;
+    store.rides++; rideCount = 0; saveStore();
+    setLive(null, 'Getting GPS fix…');
+    watchId = navigator.geolocation.watchPosition(function(pos){
+      lastPos = pos;
+      var ll=[pos.coords.latitude,pos.coords.longitude];
+      if(!meMarker){ meMarker=L.marker(ll).addTo(map).bindTooltip('You'); map.setView(ll,15); }
+      else meMarker.setLatLng(ll);
+    }, function(err){
+      setLive(false, 'GPS error: '+err.message);
+    }, {enableHighAccuracy:true, maximumAge:2000, timeout:15000});
+    tick();
+    pingTimer = setInterval(tick, PING_INTERVAL_MS);
+    document.getElementById('btnStart').textContent='■ Stop tracking';
+    document.getElementById('btnStart').classList.add('stop');
+    updateStats();
+  }
+
+  function stop(){
+    tracking=false;
+    if(watchId!=null) navigator.geolocation.clearWatch(watchId);
+    if(pingTimer) clearInterval(pingTimer);
+    watchId=null; pingTimer=null;
+    setLive(null, 'Stopped. '+rideCount+' samples this ride saved.');
+    document.getElementById('btnStart').textContent='▶ Start tracking';
+    document.getElementById('btnStart').classList.remove('stop');
+  }
+
+  // ---------- buttons ----------
+  document.getElementById('btnStart').onclick=function(){ tracking?stop():start(); };
+  document.getElementById('btnFit').onclick=fitToData;
+  document.getElementById('btnReset').onclick=function(){
+    if(confirm('Erase ALL rides and connectivity data?')){
+      store={cells:{},rides:0,samples:[]}; rideCount=0; saveStore();
+      renderCells(); renderRoute(); updateStats(); setLive(null,'Data cleared.');
+    }
+  };
+  document.getElementById('btnExport').onclick=function(){
+    var blob=new Blob([JSON.stringify(store,null,2)],{type:'application/json'});
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='train-signal-'+new Date().toISOString().slice(0,10)+'.json';
+    a.click();
+  };
+
+  // keep screen awake while tracking (best-effort)
+  var wakeLock=null;
+  document.addEventListener('visibilitychange', async function(){
+    if(tracking && wakeLock===null && document.visibilityState==='visible'){
+      try{ wakeLock=await navigator.wakeLock.request('screen'); }catch(e){}
+    }
+  });
+
+  updateStats();
+  // register service worker (caches app + map tiles for offline rides; needs http/https)
+  if('serviceWorker' in navigator && location.protocol!=='file:'){
+    navigator.serviceWorker.register('sw.js').catch(function(){});
+  }
+  // Promise.any polyfill for older Safari
+  if(!Promise.any){
+    Promise.any=function(ps){return new Promise(function(res,rej){
+      var n=ps.length,errs=[]; if(!n)return rej(new Error('none'));
+      ps.forEach(function(p,i){Promise.resolve(p).then(res,function(e){errs[i]=e;if(--n===0)rej(errs);});});
+    });};
+  }
+})();
+</script>
+</body>
+</html>
